@@ -30,3 +30,9 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## GitHub Pages
+
+The production site is published at [https://germanrhenals.github.io/pos-systems/](https://germanrhenals.github.io/pos-systems/). The `Deploy to GitHub Pages` workflow builds and deploys the app whenever changes are pushed to `master`.
+
+In the repository settings, open **Pages** and set the build and deployment source to **GitHub Actions**. The development server continues to use the root path locally.
