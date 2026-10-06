@@ -1,0 +1,7 @@
+project_id = "kuantika-pos"
+
+[functions.manage-staff]
+verify_jwt = true
+
+[functions.root-console]
+verify_jwt = false
