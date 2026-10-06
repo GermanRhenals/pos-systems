@@ -1,3 +1,4 @@
+-- Core identity model: one profile per Auth user and business-owned establishments.
 create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   username text unique,
@@ -26,6 +27,7 @@ alter table public.profiles
 create index establishments_owner_id_idx on public.establishments (owner_id);
 create index profiles_establishment_id_idx on public.profiles (establishment_id);
 
+-- Centralize tenant authorization so every RLS policy checks the same ownership rules.
 create function public.can_access_establishment(target_id uuid)
 returns boolean
 language sql
@@ -87,6 +89,7 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- Restrict browser access first; the explicit policies below grant only needed operations.
 alter table public.profiles enable row level security;
 alter table public.establishments enable row level security;
 

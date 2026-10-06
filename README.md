@@ -41,7 +41,7 @@ In the repository settings, open **Pages** and set the build and deployment sour
 
 The local Supabase URL and publishable key belong in `.env.local`; use `.env.example` as a template. The publishable key is intended for browser use. Never put a Supabase secret or service-role key in a `VITE_` variable.
 
-1. In the Supabase SQL Editor, run both files in `supabase/migrations/` in timestamp order: first `20261006000000_initial_schema.sql`, then `20261007000000_root_operator.sql`.
+1. In the Supabase SQL Editor, run all files in `supabase/migrations/` in timestamp order: `20261006000000_initial_schema.sql`, `20261007000000_root_operator.sql`, then `20261008000000_operational_state.sql`.
 2. Install or run the Supabase CLI, link this project with ref `ccsdpdeyfnqcukguyvyd`, then deploy the `manage-staff` Edge Function:
 
    ```sh
@@ -67,7 +67,11 @@ The local Supabase URL and publishable key belong in `.env.local`; use `.env.exa
 
    Root access is not available through public registration. The root console requires TOTP multi-factor authentication, lists administrator account and establishment details, supports only profile/establishment corrections and account suspension/reactivation, and records those actions in `root_audit_log`. Never promote a normal admin from the public app; provisioning is an owner-only database operation.
 
-Authentication and establishment details are stored in Supabase. Inventory, sales, requests, and shift data still use browser storage and will need a separate database migration before they are shared between devices.
+Authentication, establishment details, inventory, sales, requests, and shift state are stored in Supabase. Operational state is isolated by establishment, guarded by row-level security and a revision-checked RPC, and refreshed across devices while the app is open. On the first administrator sign-in after applying the operational-state migration, legacy browser records matching that establishment's ID are imported if no database state exists. Apply every migration before using the deployed app; never use browser storage as the authoritative source for business records.
+
+See [docs/DATABASE.md](./docs/DATABASE.md) for the schema, migration sequence, data ownership, role permissions, and legacy-data compatibility behavior.
+
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for frontend module responsibilities and the operational-data lifecycle.
 
 ## User content and copyright
 

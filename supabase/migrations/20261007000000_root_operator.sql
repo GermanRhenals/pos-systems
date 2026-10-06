@@ -1,3 +1,4 @@
+-- Root support identities are separate from customer-facing administrator roles.
 create table public.root_users (
   id uuid primary key references auth.users (id) on delete cascade,
   created_at timestamptz not null default now()
@@ -12,6 +13,7 @@ create table public.root_audit_log (
   created_at timestamptz not null default now()
 );
 
+-- Root operations require the dedicated role and are recorded for later review.
 alter table public.root_users enable row level security;
 alter table public.root_audit_log enable row level security;
 
