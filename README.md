@@ -68,3 +68,7 @@ The local Supabase URL and publishable key belong in `.env.local`; use `.env.exa
    Root access is not available through public registration. The root console requires TOTP multi-factor authentication, lists administrator account and establishment details, supports only profile/establishment corrections and account suspension/reactivation, and records those actions in `root_audit_log`. Never promote a normal admin from the public app; provisioning is an owner-only database operation.
 
 Authentication and establishment details are stored in Supabase. Inventory, sales, requests, and shift data still use browser storage and will need a separate database migration before they are shared between devices.
+
+## User content and copyright
+
+The current app does not let users upload or publish images, video, audio, or other media, and it does not yet provide an in-app copyright reporting channel. The project's planned rules and takedown review process are documented in [Política sobre derechos de autor y retiro de contenido](./POLITICA-DERECHOS-AUTOR.md). Before enabling user-published content, configure a private reporting contact and update both the policy and the app; do not direct private reports to public GitHub issues.
