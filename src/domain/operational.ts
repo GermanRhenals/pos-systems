@@ -62,6 +62,16 @@ export const taxIdExamples: Record<string, { label: string; placeholder: string 
 }
 
 export const emptyRecords: Records = { products: [], sales: [], requests: [], users: [] }
+
+/** Fresh copy of the onboarding catalog so callers never share product references. */
+export const seedProducts = (): Product[] => initialProducts.map((product) => ({ ...product }))
+
+/** Empty records seeded with the onboarding catalog, for a brand-new establishment. */
+export const seededRecords = (): Records => ({ ...emptyRecords, products: seedProducts() })
+
+/** A turn that starts now and is still open. */
+export const freshTurn = (): TurnState => ({ startedAt: Date.now(), endedAt: null })
+
 const initialRecords: Record<string, Records> = {
   'rincon-caribeno': {
     products: initialProducts,
@@ -117,7 +127,7 @@ export const initializeTurnStates = (establishmentIds: string[]) => {
   establishmentIds.forEach((id) => {
     const turn = turns[id]
     if (!turn || typeof turn.startedAt !== 'number') {
-      turns[id] = { startedAt: Date.now(), endedAt: null }
+      turns[id] = freshTurn()
       changed = true
     } else if (typeof turn.endedAt !== 'number' && turn.endedAt !== null) {
       turns[id] = { ...turn, endedAt: null }
@@ -193,7 +203,7 @@ export const loadRecords = (value: string | null): Record<string, Records> => {
       id,
       {
         ...establishmentRecords,
-        products: establishmentRecords.products?.length ? establishmentRecords.products : initialProducts.map((product) => ({ ...product })),
+        products: establishmentRecords.products?.length ? establishmentRecords.products : seedProducts(),
         users: (establishmentRecords.users ?? []).map((user) => ({
           id: user.id,
           name: user.name,
