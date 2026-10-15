@@ -52,3 +52,5 @@
 .turn-clock>strong { color:var(--ink); font:600 28px 'DM Mono',monospace; }
 .turn-clock .primary-button { margin-top:3px; white-space:nowrap; }
 @media (max-width: 680px) { .close-hero { align-items:flex-start; flex-direction:column; gap:16px; }.turn-clock { justify-items:start; min-width:0; } }
+.root-return-button { width:100%; margin-bottom:12px; border:1px solid #c9d5ef; border-radius:7px; background:#f1f5ff; color:#37518a; padding:11px 12px; font-size:11px; text-align:center; }
+.root-return-button:hover { background:#e3ebff; }

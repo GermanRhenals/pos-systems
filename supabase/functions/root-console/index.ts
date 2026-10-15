@@ -90,6 +90,88 @@ Deno.serve(async (request) => {
   }
 
   try {
+    if (payload.action === 'ensure_sandbox') {
+      let { data: sandbox, error: sandboxError } = await adminClient
+        .from('establishments')
+        .select('id, name, city, country, tax_id')
+        .eq('owner_id', authData.user.id)
+        .eq('is_sandbox', true)
+        .maybeSingle()
+      if (sandboxError) return respond({ error: 'Could not load the root test establishment' }, 500)
+
+      let created = false
+      if (!sandbox) {
+        const { data, error } = await adminClient
+          .from('establishments')
+          .insert({
+            owner_id: authData.user.id,
+            name: 'Testing Establecimiento',
+            city: 'Cartagena',
+            country: 'Colombia',
+            tax_id: `TEST-${authData.user.id.slice(0, 8).toUpperCase()}`,
+            is_sandbox: true,
+          })
+          .select('id, name, city, country, tax_id')
+          .single()
+        if (error && error.code !== '23505') return respond({ error: 'Could not create the root test establishment' }, 500)
+        if (data) {
+          sandbox = data
+          created = true
+        } else {
+          const retry = await adminClient
+            .from('establishments')
+            .select('id, name, city, country, tax_id')
+            .eq('owner_id', authData.user.id)
+            .eq('is_sandbox', true)
+            .single()
+          if (retry.error) return respond({ error: 'Could not load the root test establishment' }, 500)
+          sandbox = retry.data
+        }
+      }
+
+      const { data: operationalState, error: stateLookupError } = await adminClient
+        .from('operational_state')
+        .select('establishment_id')
+        .eq('establishment_id', sandbox.id)
+        .maybeSingle()
+      if (stateLookupError) return respond({ error: 'Could not verify test inventory' }, 500)
+
+      if (!operationalState) {
+        const products = [
+          { id: 1, name: 'Café americano', category: 'Bebidas', stock: 20 + Math.floor(Math.random() * 31), minimum: 10, price: 5000, unit: 'taza' },
+          { id: 2, name: 'Limonada de coco', category: 'Bebidas', stock: 10 + Math.floor(Math.random() * 21), minimum: 8, price: 9000, unit: 'vaso' },
+          { id: 3, name: 'Hamburguesa de prueba', category: 'Comidas', stock: 8 + Math.floor(Math.random() * 13), minimum: 5, price: 22000, unit: 'unidad' },
+          { id: 4, name: 'Porción de papas', category: 'Acompañamientos', stock: 12 + Math.floor(Math.random() * 19), minimum: 7, price: 8000, unit: 'porción' },
+          { id: 5, name: 'Jugo de mango', category: 'Bebidas', stock: 10 + Math.floor(Math.random() * 21), minimum: 8, price: 7000, unit: 'vaso' },
+          { id: 6, name: 'Torta de chocolate', category: 'Postres', stock: 5 + Math.floor(Math.random() * 11), minimum: 4, price: 9500, unit: 'porción' },
+          { id: 7, name: 'Agua', category: 'Bebidas', stock: 20 + Math.floor(Math.random() * 31), minimum: 10, price: 4000, unit: 'botella' },
+          { id: 8, name: 'Sándwich de prueba', category: 'Comidas', stock: 7 + Math.floor(Math.random() * 14), minimum: 5, price: 16000, unit: 'unidad' },
+        ]
+        const { error: seedError } = await adminClient.from('operational_state').insert({
+          establishment_id: sandbox.id,
+          state: {
+            products,
+            sales: [],
+            requests: [],
+            turn: { startedAt: Date.now(), endedAt: null },
+          },
+        })
+        if (seedError && seedError.code !== '23505') return respond({ error: 'Could not seed the root test inventory' }, 500)
+      }
+
+      if (created) await writeAudit('create_sandbox_establishment', authData.user.id, { establishmentId: sandbox.id })
+      return respond({
+        success: true,
+        sandbox: {
+          id: sandbox.id,
+          name: sandbox.name,
+          city: sandbox.city,
+          country: sandbox.country,
+          taxId: sandbox.tax_id,
+        },
+      })
+    }
+
     if (payload.action === 'list') {
       const { data: profiles, error: profilesError } = await adminClient
         .from('profiles')
@@ -138,7 +220,24 @@ Deno.serve(async (request) => {
         .order('created_at', { ascending: false })
         .limit(30)
       if (auditError) return respond({ error: 'Could not load audit history' }, 500)
-      return respond({ accounts, audit })
+      const { data: sandbox, error: sandboxError } = await adminClient
+        .from('establishments')
+        .select('id, name, city, country, tax_id')
+        .eq('owner_id', authData.user.id)
+        .eq('is_sandbox', true)
+        .maybeSingle()
+      if (sandboxError) return respond({ error: 'Could not load the root test establishment' }, 500)
+      return respond({
+        accounts,
+        audit,
+        sandbox: sandbox ? {
+          id: sandbox.id,
+          name: sandbox.name,
+          city: sandbox.city,
+          country: sandbox.country,
+          taxId: sandbox.tax_id,
+        } : null,
+      })
     }
 
     if (!payload.targetUserId) return respond({ error: 'Administrator account is required' }, 400)

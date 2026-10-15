@@ -11,6 +11,10 @@ The application uses React function components and TypeScript modules rather tha
 - `src/App.css` contains the POS layout and visual styles; `src/index.css` contains global styles.
 - `supabase/migrations/` defines the persistent schema, row-level security, and database-side role enforcement. See [DATABASE.md](./DATABASE.md).
 
+## Root test mode
+
+The root console exposes a local `Testing establecimiento` that lets a root operator preview the non-root experience without touching Supabase. Entering it builds an in-memory establishment with synthetic inventory and test staff; while active, the client skips operational-state reads, revision-checked writes, and cross-device polling, so nothing is persisted. A banner marks the session and a "Volver a consola root" button (in the banner and the sidebar) discards the temporary state and returns to the root console without signing out.
+
 ## Operational data lifecycle
 
 1. Supabase Auth establishes the session. The app loads the user's profile and the establishments they are permitted to access.

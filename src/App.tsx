@@ -32,10 +32,33 @@ import {
   type RootAccount,
   type RootAuditEntry,
   type RootEstablishment,
+  type RootSandbox,
   type SalesPeriod,
   type TurnState,
   type User,
 } from './domain/operational'
+
+// supabase.functions.invoke hides non-2xx response bodies behind a generic
+// FunctionsHttpError message; read the function's own { error } payload instead.
+async function edgeFunctionError(error: unknown, data: { error?: string } | null | undefined, fallback: string) {
+  if (data && typeof data === 'object' && data.error) return String(data.error)
+  const context = (error as { context?: unknown } | null)?.context
+  if (context instanceof Response) {
+    try {
+      const body = await context.clone().json()
+      if (body && typeof body === 'object' && 'error' in body && body.error) return String((body as { error: unknown }).error)
+    } catch {
+      try {
+        const text = await context.clone().text()
+        if (text) return text
+      } catch {
+        // Fall through to the generic message below.
+      }
+    }
+  }
+  if (error instanceof Error && error.message) return error.message
+  return fallback
+}
 
 function App() {
   // Authentication and root-preview state are kept separate from establishment operations.
@@ -64,6 +87,8 @@ function App() {
   const [mfaFlow, setMfaFlow] = useState<MfaFlow | null>(null)
   const [mfaCode, setMfaCode] = useState('')
   const [rootAccounts, setRootAccounts] = useState<RootAccount[]>(rootPreview ? [previewAccount] : [])
+  const [rootSandbox, setRootSandbox] = useState<RootSandbox | null>(null)
+  const [rootSandboxActive, setRootSandboxActive] = useState(false)
   const [rootAudit, setRootAudit] = useState<RootAuditEntry[]>(rootPreview ? [{
     id: 1,
     action: 'update_establishment',
@@ -124,10 +149,11 @@ function App() {
   const salesLedger = groupSalesByOrder(salesInPeriod)
   const pendingRequests = requests.filter((request) => request.status === 'Pendiente').length
   const serverCount = users.filter((user) => user.role === 'waiter').length
-  const isAdmin = session?.role === 'admin'
-  const isRoot = session?.role === 'root'
+  const isAdmin = session?.role === 'admin' || (session?.role === 'root' && rootSandboxActive)
+  const isRoot = session?.role === 'root' && !rootSandboxActive
   const isBar = session?.role === 'bar'
   const isWaiter = session?.role === 'waiter'
+  const isEphemeralTestMode = rootSandboxActive
   const showToast = useCallback((message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
@@ -326,7 +352,7 @@ function App() {
   }, [rootPreview])
   useEffect(() => {
     // Staff identity and role data remain normalized in the profiles table.
-    if (rootPreview || !supabase || !activeEstablishmentId || !session) return
+    if (rootPreview || !supabase || !activeEstablishmentId || !session || isRoot || isEphemeralTestMode) return
     const client = supabase
     let active = true
     const loadStaff = async () => {
@@ -359,10 +385,10 @@ function App() {
     }
     void loadStaff()
     return () => { active = false }
-  }, [activeEstablishmentId, session, rootPreview])
+  }, [activeEstablishmentId, session, rootPreview, isRoot, isEphemeralTestMode])
   useEffect(() => {
     // Polling picks up updates from other open devices without enabling offline writes.
-    if (!supabase || !session || isRoot || !activeEstablishmentId || !loadedOperationalRef.current.has(activeEstablishmentId)) return
+    if (!supabase || !session || isRoot || isEphemeralTestMode || !activeEstablishmentId || !loadedOperationalRef.current.has(activeEstablishmentId)) return
     const client = supabase
     let active = true
     const refreshOperationalState = async () => {
@@ -406,10 +432,10 @@ function App() {
     }
     const timer = window.setInterval(() => { void refreshOperationalState() }, 4000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [activeEstablishmentId, session, isRoot, recordsByEstablishment, turns, showToast])
+  }, [activeEstablishmentId, session, isRoot, isEphemeralTestMode, recordsByEstablishment, turns, showToast])
   useEffect(() => {
     // Serialize revision-checked writes so rapid UI changes cannot reorder saves.
-    if (!supabase || !session || isRoot) return
+    if (!supabase || !session || isRoot || isEphemeralTestMode) return
     const client = supabase
     for (const establishmentId of Object.keys(recordsByEstablishment)) {
       if (!loadedOperationalRef.current.has(establishmentId)) continue
@@ -467,7 +493,7 @@ function App() {
       operationalSaveQueueRef.current[establishmentId] = queued
       void queued
     }
-  }, [recordsByEstablishment, turns, session, isRoot, showToast])
+  }, [recordsByEstablishment, turns, session, isRoot, isEphemeralTestMode, showToast])
   const visibleProducts = products.filter((product) => product.name.toLowerCase().includes(search.toLowerCase()) || product.category.toLowerCase().includes(search.toLowerCase()))
   const availableWaiterProducts = products.filter((product) => product.name.toLowerCase().includes(waiterProductSearch.toLowerCase()) || product.category.toLowerCase().includes(waiterProductSearch.toLowerCase()))
   const waiterCartShortages = Object.entries(waiterCart).flatMap(([productId, quantity]) => {
@@ -482,13 +508,14 @@ function App() {
     setRootLoading(true)
     const { data, error } = await supabase.functions.invoke('root-console', { body: { action: 'list' } })
     if (error || data?.error) {
-      setRootError(error?.message ?? data.error)
+      setRootError(await edgeFunctionError(error, data, 'No se pudo cargar la consola root'))
       setRootLoading(false)
       return
     }
     const accounts = data.accounts as RootAccount[]
     setRootAccounts(accounts)
     setRootAudit(data.audit as RootAuditEntry[])
+    setRootSandbox(data.sandbox as RootSandbox | null)
     setRootEdits(Object.fromEntries(accounts.map((account) => [account.id, { fullName: account.fullName, email: account.email }])))
     setRootEstablishmentEdits(Object.fromEntries(accounts.flatMap((account) => account.establishments.map((establishment) => [establishment.id, establishment]))))
     setRootError('')
@@ -500,11 +527,48 @@ function App() {
     setRootError('')
     const { data, error } = await supabase.functions.invoke('root-console', { body: payload })
     if (error || data?.error) {
-      setRootError(error?.message ?? data.error)
+      setRootError(await edgeFunctionError(error, data, 'La operación root no se pudo completar'))
       return
     }
     showToast(successMessage)
     await loadRootConsole()
+  }
+  const enterRootSandbox = () => {
+    const establishment: Establishment = {
+      id: 'testing-establishment',
+      name: 'Testing establecimiento',
+      city: rootSandbox?.city ?? 'Cartagena',
+      country: rootSandbox?.country ?? 'Colombia',
+      taxId: rootSandbox?.taxId ?? 'TEST-LOCAL',
+    }
+    const establishmentId = establishment.id
+    loadedOperationalRef.current.add(establishmentId)
+    operationalRevisionRef.current[establishmentId] = 0
+    savedOperationalSnapshotRef.current[establishmentId] = ''
+    setEstablishments([establishment])
+    setRecordsByEstablishment((current) => ({
+      ...current,
+      [establishmentId]: { ...emptyRecords, products: initialProducts.map((product) => ({ ...product })) },
+    }))
+    setTurns((current) => ({ ...current, [establishmentId]: { startedAt: Date.now(), endedAt: null } }))
+    setActiveEstablishmentId(establishmentId)
+    setRootError('')
+    setRootSandboxActive(true)
+    setActiveView('Resumen')
+  }
+  const leaveRootSandbox = () => {
+    const establishmentId = 'testing-establishment'
+    loadedOperationalRef.current.delete(establishmentId)
+    delete operationalRevisionRef.current[establishmentId]
+    delete savedOperationalSnapshotRef.current[establishmentId]
+    delete operationalSaveQueueRef.current[establishmentId]
+    delete operationalSaveEpochRef.current[establishmentId]
+    delete reportedOperationalFailureRef.current[establishmentId]
+    setEstablishments((current) => current.filter((item) => item.id !== establishmentId))
+    setRecordsByEstablishment((current) => { const next = { ...current }; delete next[establishmentId]; return next })
+    setTurns((current) => { const next = { ...current }; delete next[establishmentId]; return next })
+    setRootSandboxActive(false)
+    setActiveView('Consola root')
   }
   useEffect(() => {
     if (isRoot && !rootPreview) void loadRootConsole()
@@ -512,6 +576,7 @@ function App() {
   // Authentication actions: sign-in, registration, MFA verification, and sign-out.
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setRootSandboxActive(false)
     if (!supabase) { setLoginError('Falta configurar Supabase para iniciar sesión'); return }
     const username = login.username.trim().toLowerCase().replace(/\s+/g, '.')
     const email = username.includes('@') ? username : staffAuthEmail(username)
@@ -623,6 +688,7 @@ function App() {
       if (error) { showToast(`No se pudo cerrar sesión: ${error.message}`); return }
     }
     setLogin({ username: '', password: '' })
+    setRootSandboxActive(false)
     setActiveView('Resumen')
   }
   // Operational commands update React state; the persistence effect saves them to Supabase.
@@ -742,6 +808,19 @@ function App() {
     if (!newUser.name.trim() || !username || !newUser.password.trim()) { showToast('Completa nombre, usuario y contraseña'); return }
     if (!/^[a-z0-9._-]{3,32}$/.test(username) || newUser.password.length < 8) { showToast('El usuario debe tener 3–32 caracteres y la contraseña al menos 8'); return }
     if (users.some((user) => user.username === username)) { showToast('Ese nombre de usuario ya existe en este establecimiento'); return }
+    if (isEphemeralTestMode) {
+      updateRecords((current) => ({ ...current, users: [...current.users, {
+        id: `test-${Date.now()}`,
+        username,
+        name: newUser.name.trim(),
+        zone: newUser.zone,
+        role: newUser.role,
+        active: true,
+      }] }))
+      setNewUser({ name: '', username: '', password: '', role: 'waiter', zone: 'Salón principal' })
+      showToast('Usuario creado en modo prueba: no se guarda en la base de datos')
+      return
+    }
     const { data, error } = await supabase.functions.invoke('manage-staff', {
       body: {
         action: 'create',
@@ -753,7 +832,7 @@ function App() {
         zone: newUser.zone,
       },
     })
-    if (error || data?.error) { showToast(error?.message ?? data.error); return }
+    if (error || data?.error) { showToast(await edgeFunctionError(error, data, 'No se pudo crear el usuario')); return }
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, username, full_name, role, zone')
@@ -773,11 +852,16 @@ function App() {
   }
   const deleteUser = async (user: User) => {
     if (!window.confirm(`¿Eliminar el usuario ${user.name}?`)) return
+    if (isEphemeralTestMode) {
+      updateRecords((current) => ({ ...current, users: current.users.filter((item) => item.id !== user.id) }))
+      showToast(`${user.name} eliminado en modo prueba: no se guarda en la base de datos`)
+      return
+    }
     if (!supabase) { showToast('Supabase no está configurado'); return }
     const { data, error } = await supabase.functions.invoke('manage-staff', {
       body: { action: 'delete', establishmentId: activeEstablishmentId, id: user.id },
     })
-    if (error || data?.error) { showToast(error?.message ?? data.error); return }
+    if (error || data?.error) { showToast(await edgeFunctionError(error, data, 'No se pudo eliminar el usuario')); return }
     updateRecords((current) => ({ ...current, users: current.users.filter((item) => item.id !== user.id) }))
     showToast(`${user.name} eliminado`)
   }
@@ -785,6 +869,20 @@ function App() {
     event.preventDefault()
     if (!supabase || !session || !isAdmin) { showToast('Inicia sesión como administrador para crear establecimientos'); return }
     if (!newEstablishment.name.trim() || !newEstablishment.city.trim() || !newEstablishment.taxId.trim()) { showToast('Completa el nombre, ubicación e identificación fiscal del establecimiento'); return }
+    if (isEphemeralTestMode) {
+      const establishment: Establishment = { id: `test-${Date.now()}`, name: newEstablishment.name.trim(), city: newEstablishment.city.trim(), country: newEstablishment.country, taxId: newEstablishment.taxId.trim() }
+      setEstablishments((current) => [...current, establishment])
+      loadedOperationalRef.current.add(establishment.id)
+      operationalRevisionRef.current[establishment.id] = 0
+      savedOperationalSnapshotRef.current[establishment.id] = ''
+      setRecordsByEstablishment((current) => ({ ...current, [establishment.id]: { ...emptyRecords, products: initialProducts.map((product) => ({ ...product })) } }))
+      setActiveEstablishmentId(establishment.id)
+      updateTurns((current) => ({ ...current, [establishment.id]: { startedAt: Date.now(), endedAt: null } }))
+      setActiveView('Resumen')
+      setNewEstablishment({ name: '', city: '', country: 'Colombia', taxId: '' })
+      showToast('Establecimiento creado en modo prueba: no se guarda en la base de datos')
+      return
+    }
     void (async () => {
       const { data, error } = await supabase
         .from('establishments')
@@ -823,15 +921,65 @@ function App() {
       <div className="brand"><div className="brand-mark">K</div><div><strong>Kuantika POS</strong><span>operaciones</span></div></div>
       {!isRoot && <div className="location"><span className="live-dot" /><select value={activeEstablishmentId} disabled={!isAdmin} onChange={(event) => { setActiveEstablishmentId(event.target.value); setActiveView('Resumen'); setSearch('') }}>{establishments.map((establishment) => <option value={establishment.id} key={establishment.id}>{establishment.name}</option>)}</select><span className="chevron">⌄</span></div>}
       <nav className="main-nav">{(isRoot ? ['Consola root'] : isAdmin ? ['Resumen', 'Inventario', 'Solicitudes', 'Ventas', 'Usuarios', 'Establecimientos', 'Cierre de turno'] : ['Solicitudes']).map((view) => <button className={activeView === view ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView(view)} key={view}><span className="nav-icon">{view === 'Resumen' ? '⌂' : view === 'Inventario' ? '▦' : view === 'Solicitudes' ? '↗' : view === 'Ventas' ? '$' : view === 'Usuarios' ? '♙' : view === 'Establecimientos' ? '⌂' : view === 'Consola root' ? '◆' : '◷'}</span>{view === 'Solicitudes' && isBar ? 'Bandeja del bar' : view}{view === 'Solicitudes' && pendingRequests > 0 && <span className="nav-badge">{pendingRequests}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="shift-card"><span>Sesión activa</span><strong>{isRoot ? 'Root de soporte' : isAdmin ? 'Administrador' : session.user?.name}</strong><small>{isRoot ? 'Acceso global auditado' : isBar ? `Bar · ${activeEstablishment?.name ?? ''}` : activeEstablishment?.name}</small></div><button className="user-button" onClick={() => isAdmin ? setShowLogin(true) : void signOut()}><span className="avatar">{isRoot ? 'R' : isAdmin ? 'JD' : session.user?.name.slice(0, 1)}</span><span><strong>{isRoot ? 'Root de soporte' : isAdmin ? 'Juan Delgado' : session.user?.name}</strong><small>{isAdmin ? 'Cambiar de usuario' : 'Cerrar sesión'}</small></span><span className="chevron">⌄</span></button></div>
+      <div className="sidebar-bottom">{rootSandboxActive && <button className="root-return-button" onClick={leaveRootSandbox}>← Volver a consola root</button>}<div className="shift-card"><span>Sesión activa</span><strong>{isRoot ? 'Root de soporte' : isAdmin ? 'Administrador' : session.user?.name}</strong><small>{isRoot ? 'Acceso global auditado' : isBar ? `Bar · ${activeEstablishment?.name ?? ''}` : activeEstablishment?.name}</small></div><button className="user-button" onClick={() => isAdmin ? setShowLogin(true) : void signOut()}><span className="avatar">{isRoot ? 'R' : isAdmin ? 'JD' : session.user?.name.slice(0, 1)}</span><span><strong>{isRoot ? 'Root de soporte' : isAdmin ? 'Juan Delgado' : session.user?.name}</strong><small>{isAdmin ? 'Cambiar de usuario' : 'Cerrar sesión'}</small></span><span className="chevron">⌄</span></button></div>
     </aside>
     <main className="content">
       {rootPreview && <div className="root-preview-banner" role="status"><strong>Vista previa local · datos ficticios</strong><span>Solo puedes revisar la interfaz. No se consultan ni se guardan datos reales.</span></div>}
       <div className="ai-disclosure-banner"><strong>Aviso de inteligencia artificial y arbitraje:</strong> Este sitio utiliza inteligencia artificial para apoyar análisis, recomendaciones y automatización operativa. No sustituye la revisión humana ni la responsabilidad final del operador. Cualquier controversia relacionada con el uso de la plataforma se resolverá mediante arbitraje vinculante, conforme a la ley aplicable y con previo cumplimiento de este mecanismo de solución.</div>
       <PrivacyNotice />
+      {rootSandboxActive && <div className="root-preview-banner" role="status"><strong>Testing establecimiento · modo de prueba</strong><span>Estás viendo la experiencia de los usuarios no root. Los cambios que hagas no se guardan en la base de datos.</span><button className="request-action" onClick={leaveRootSandbox}>Volver a consola root</button></div>}
       <header className="topbar"><div><span className="eyebrow">{isRoot ? 'KUANTIKA POS · ACCESO ROOT' : `${activeEstablishment?.name.toUpperCase() ?? 'ESTABLECIMIENTO'}`}</span><h1>{activeView === 'Resumen' ? 'Resumen operativo' : activeView === 'Solicitudes' ? isBar ? 'Bandeja del bar' : 'Operación de sala' : activeView}</h1></div><div className="top-actions"><button className="icon-button" title="Notificaciones">♢<span className="notification-dot" /></button><div className="header-avatar">{isRoot ? 'R' : isAdmin ? 'JD' : session.user?.name.slice(0, 1)}</div></div></header>
       {/* Privileged support console and audited administrator actions. */}
-      {isRoot && activeView === 'Consola root' && <section className="view-section root-console"><div className="view-toolbar"><div><span className="section-kicker">SOPORTE Y CONTROL DE ACCESO</span><h2>Administradores y establecimientos</h2></div><button className="primary-button" onClick={() => void loadRootConsole()} disabled={rootLoading}>{rootLoading ? 'Actualizando…' : 'Actualizar datos'}</button></div><p className="root-warning">Acceso privilegiado. Las modificaciones y suspensiones quedan registradas en la auditoría. Nunca se muestran ni se modifican contraseñas.</p><label className="root-search-label">Buscar administrador<input value={rootSearch} onChange={(event) => setRootSearch(event.target.value)} placeholder="Nombre o correo" /></label>{rootError && <div className="login-error" role="alert">{rootError}</div>}{rootLoading && rootAccounts.length === 0 ? <div className="panel root-empty">Cargando cuentas…</div> : rootAccounts.filter((account) => `${account.fullName} ${account.email}`.toLowerCase().includes(rootSearch.toLowerCase())).map((account) => { const accountActive = !account.bannedUntil || Date.parse(account.bannedUntil) <= clockNow; const edits = rootEdits[account.id] ?? { fullName: account.fullName, email: account.email }; return <article className="panel root-account" key={account.id}><div className="root-account-heading"><div><span className="section-kicker">ADMINISTRADOR · {accountActive ? 'ACTIVO' : 'SUSPENDIDO'}</span><h3>{account.fullName}</h3><span className="muted">{account.email}</span></div><button className={accountActive ? 'remove-user' : 'request-action'} onClick={() => void runRootAction({ action: 'set_status', targetUserId: account.id, active: !accountActive }, accountActive ? 'Cuenta suspendida' : 'Cuenta reactivada')}>{accountActive ? 'Suspender cuenta' : 'Reactivar cuenta'}</button></div><div className="root-metadata"><span>Registro: {new Date(account.createdAt).toLocaleString('es-CO')}</span><span>Último acceso: {account.lastSignInAt ? new Date(account.lastSignInAt).toLocaleString('es-CO') : 'Nunca'}</span><span>Correo: {account.emailConfirmedAt ? 'Confirmado' : 'Pendiente de confirmar'}</span></div><form className="root-edit-form" onSubmit={(event) => { event.preventDefault(); void runRootAction({ action: 'update_admin', targetUserId: account.id, ...edits }, 'Perfil de administrador actualizado') }}><label>Nombre<input required value={edits.fullName} onChange={(event) => setRootEdits((current) => ({ ...current, [account.id]: { ...edits, fullName: event.target.value } }))} /></label><label>Correo electrónico<input required type="email" value={edits.email} onChange={(event) => setRootEdits((current) => ({ ...current, [account.id]: { ...edits, email: event.target.value } }))} /></label><button className="primary-button" type="submit">Guardar perfil</button></form><div className="root-establishments"><h4>Establecimientos ({account.establishments.length})</h4>{account.establishments.length === 0 && <span className="muted">Sin establecimientos registrados</span>}{account.establishments.map((establishment) => { const edit = rootEstablishmentEdits[establishment.id] ?? establishment; return <form className="root-establishment-form" key={establishment.id} onSubmit={(event) => { event.preventDefault(); void runRootAction({ action: 'update_establishment', targetUserId: account.id, ...edit }, 'Establecimiento corregido') }}><div className="root-establishment-title"><strong>{establishment.name}</strong><small>ID fiscal: {establishment.taxId}</small></div><label>Nombre<input required value={edit.name} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, name: event.target.value } }))} /></label><label>Ciudad<input required value={edit.city} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, city: event.target.value } }))} /></label><label>País<input required value={edit.country} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, country: event.target.value } }))} /></label><label>Identificación fiscal<input required value={edit.taxId} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, taxId: event.target.value } }))} /></label><button className="request-action" type="submit">Guardar establecimiento</button></form>})}</div></article>})}{!rootLoading && rootAccounts.length === 0 && <div className="panel root-empty">No hay cuentas de administrador para mostrar.</div>}<div className="panel root-audit"><div className="panel-heading"><div><span className="section-kicker">TRAZABILIDAD</span><h2>Actividad root reciente</h2></div><span>{rootAudit.length} eventos</span></div>{rootAudit.length === 0 ? <p className="muted">Las acciones privilegiadas aparecerán aquí.</p> : rootAudit.map((entry) => <div className="root-audit-row" key={entry.id}><span>{new Date(entry.created_at).toLocaleString('es-CO')}</span><strong>{entry.action}</strong><span>{JSON.stringify(entry.details)}</span></div>)}</div></section>}
+      {isRoot && activeView === 'Consola root' && <section className="view-section root-console">
+        <div className="view-toolbar">
+          <div><span className="section-kicker">SOPORTE Y CONTROL DE ACCESO</span><h2>Administradores y establecimientos</h2></div>
+          <button className="primary-button" onClick={() => void loadRootConsole()} disabled={rootLoading}>{rootLoading ? 'Actualizando…' : 'Actualizar datos'}</button>
+        </div>
+        <p className="root-warning">Acceso privilegiado. Las modificaciones y suspensiones quedan registradas en la auditoría. Nunca se muestran ni se modifican contraseñas.</p>
+        <article className="panel root-sandbox-panel">
+          <div>
+            <span className="section-kicker">ENTORNO AISLADO</span>
+            <h3>Testing Establecimiento</h3>
+            <p className="muted">Espacio de prueba local con inventario y usuarios ficticios. Puedes operar como lo hará un usuario externo; nada se guarda en la base de datos.</p>
+          </div>
+          <div className="root-sandbox-actions"><span className="muted">{rootSandbox ? `${rootSandbox.city}, ${rootSandbox.country}` : 'Entorno local sin conexión'}</span><button className="primary-button" onClick={enterRootSandbox}>Entrar a probar</button></div>
+        </article>
+        <label className="root-search-label">Buscar administrador<input value={rootSearch} onChange={(event) => setRootSearch(event.target.value)} placeholder="Nombre o correo" /></label>
+        {rootError && <div className="login-error" role="alert">{rootError}</div>}
+        {rootLoading && rootAccounts.length === 0 ? <div className="panel root-empty">Cargando cuentas…</div> : rootAccounts.filter((account) => `${account.fullName} ${account.email}`.toLowerCase().includes(rootSearch.toLowerCase())).map((account) => {
+          const accountActive = !account.bannedUntil || Date.parse(account.bannedUntil) <= clockNow
+          const edits = rootEdits[account.id] ?? { fullName: account.fullName, email: account.email }
+          return <article className="panel root-account" key={account.id}>
+            <div className="root-account-heading"><div><span className="section-kicker">ADMINISTRADOR · {accountActive ? 'ACTIVO' : 'SUSPENDIDO'}</span><h3>{account.fullName}</h3><span className="muted">{account.email}</span></div><button className={accountActive ? 'remove-user' : 'request-action'} onClick={() => void runRootAction({ action: 'set_status', targetUserId: account.id, active: !accountActive }, accountActive ? 'Cuenta suspendida' : 'Cuenta reactivada')}>{accountActive ? 'Suspender cuenta' : 'Reactivar cuenta'}</button></div>
+            <div className="root-metadata"><span>Registro: {new Date(account.createdAt).toLocaleString('es-CO')}</span><span>Último acceso: {account.lastSignInAt ? new Date(account.lastSignInAt).toLocaleString('es-CO') : 'Nunca'}</span><span>Correo: {account.emailConfirmedAt ? 'Confirmado' : 'Pendiente de confirmar'}</span></div>
+            <form className="root-edit-form" onSubmit={(event) => { event.preventDefault(); void runRootAction({ action: 'update_admin', targetUserId: account.id, ...edits }, 'Perfil de administrador actualizado') }}>
+              <label>Nombre<input required value={edits.fullName} onChange={(event) => setRootEdits((current) => ({ ...current, [account.id]: { ...edits, fullName: event.target.value } }))} /></label>
+              <label>Correo electrónico<input required type="email" value={edits.email} onChange={(event) => setRootEdits((current) => ({ ...current, [account.id]: { ...edits, email: event.target.value } }))} /></label>
+              <button className="primary-button" type="submit">Guardar perfil</button>
+            </form>
+            <div className="root-establishments">
+              <h4>Establecimientos ({account.establishments.length})</h4>
+              {account.establishments.length === 0 && <span className="muted">Sin establecimientos registrados</span>}
+              {account.establishments.map((establishment) => {
+                const edit = rootEstablishmentEdits[establishment.id] ?? establishment
+                return <form className="root-establishment-form" key={establishment.id} onSubmit={(event) => { event.preventDefault(); void runRootAction({ action: 'update_establishment', targetUserId: account.id, ...edit }, 'Establecimiento corregido') }}>
+                  <div className="root-establishment-title"><strong>{establishment.name}</strong><small>ID fiscal: {establishment.taxId}</small></div>
+                  <label>Nombre<input required value={edit.name} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, name: event.target.value } }))} /></label>
+                  <label>Ciudad<input required value={edit.city} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, city: event.target.value } }))} /></label>
+                  <label>País<input required value={edit.country} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, country: event.target.value } }))} /></label>
+                  <label>Identificación fiscal<input required value={edit.taxId} onChange={(event) => setRootEstablishmentEdits((current) => ({ ...current, [establishment.id]: { ...edit, taxId: event.target.value } }))} /></label>
+                  <button className="request-action" type="submit">Guardar establecimiento</button>
+                </form>
+              })}
+            </div>
+          </article>
+        })}
+        {!rootLoading && rootAccounts.length === 0 && <div className="panel root-empty">No hay cuentas de administrador para mostrar.</div>}
+        <div className="panel root-audit">
+          <div className="panel-heading"><div><span className="section-kicker">TRAZABILIDAD</span><h2>Actividad root reciente</h2></div><span>{rootAudit.length} eventos</span></div>
+          {rootAudit.length === 0 ? <p className="muted">Las acciones privilegiadas aparecerán aquí.</p> : rootAudit.map((entry) => <div className="root-audit-row" key={entry.id}><span>{new Date(entry.created_at).toLocaleString('es-CO')}</span><strong>{entry.action}</strong><span>{JSON.stringify(entry.details)}</span></div>)}
+        </div>
+      </section>}
       {!isAdmin && activeTurn.endedAt !== null && <div className="shift-closed-notice" role="status">{isBar ? 'El turno está cerrado; no se pueden despachar pedidos.' : 'El turno está cerrado. Solo un administrador puede iniciarlo; podrás solicitar al bar cuando esté abierto.'}</div>}
       {/* Inline validation shared by the waiter order form and product catalog. */}
       {isWaiter && activeView === 'Solicitudes' && waiterCartShortages.length > 0 && <div className="stock-shortage-notice" role="alert"><strong>Stock insuficiente para esta solicitud</strong><span>{waiterCartShortages.join(' · ')}</span></div>}

@@ -15,6 +15,7 @@ export type OperationalState = Pick<Records, 'products' | 'sales' | 'requests'> 
 export type SalesPeriod = 'Día' | 'Semana' | 'Mes' | 'Trimestre' | 'Año'
 export type SalesLedgerEntry = { id: string; orderedAt: number; dispatchedAt: number; server: string; table: string; products: string[]; total: number }
 export type RootEstablishment = { id: string; name: string; city: string; country: string; taxId: string }
+export type RootSandbox = RootEstablishment
 export type RootAccount = { id: string; fullName: string; email: string; createdAt: string; lastSignInAt: string | null; emailConfirmedAt: string | null; bannedUntil: string | null; establishments: RootEstablishment[] }
 export type RootAuditEntry = { id: number; action: string; target_user_id: string | null; details: Record<string, unknown>; created_at: string }
 export type MfaFlow = { factorId: string; challengeId: string; qrCode?: string; secret?: string }

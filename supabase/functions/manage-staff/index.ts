@@ -45,7 +45,12 @@ Deno.serve(async (request) => {
     .eq('id', authData.user.id)
     .maybeSingle()
   if (rootActorError) return respond({ error: 'Could not verify account permissions' }, 500)
-  if (rootActor) return respond({ error: 'Root accounts cannot use establishment staff management' }, 403)
+  if (rootActor) {
+    const { data: claims, error: claimsError } = await authClient.auth.getClaims(accessToken)
+    if (claimsError || claims?.claims.aal !== 'aal2') {
+      return respond({ error: 'Root staff management requires multi-factor authentication' }, 403)
+    }
+  }
 
   let payload: { action?: string; establishmentId?: string; id?: string; name?: string; username?: string; password?: string; role?: string; zone?: string }
   try {
@@ -57,12 +62,15 @@ Deno.serve(async (request) => {
   if (!payload.establishmentId) return respond({ error: 'Establishment is required' }, 400)
   const { data: establishment, error: establishmentError } = await adminClient
     .from('establishments')
-    .select('id')
+    .select('id, is_sandbox')
     .eq('id', payload.establishmentId)
     .eq('owner_id', authData.user.id)
     .maybeSingle()
   if (establishmentError) return respond({ error: 'Could not verify establishment access' }, 500)
   if (!establishment) return respond({ error: 'Establishment not found' }, 404)
+  if (rootActor && !establishment.is_sandbox) {
+    return respond({ error: 'Root accounts can manage staff only in their test establishment' }, 403)
+  }
 
   if (payload.action === 'delete') {
     if (!payload.id) return respond({ error: 'User id is required' }, 400)

@@ -41,7 +41,7 @@ In the repository settings, open **Pages** and set the build and deployment sour
 
 The local Supabase URL and publishable key belong in `.env.local`; use `.env.example` as a template. The publishable key is intended for browser use. Never put a Supabase secret or service-role key in a `VITE_` variable.
 
-1. In the Supabase SQL Editor, run all files in `supabase/migrations/` in timestamp order: `20261006000000_initial_schema.sql`, `20261007000000_root_operator.sql`, then `20261008000000_operational_state.sql`.
+1. In the Supabase SQL Editor, run all files in `supabase/migrations/` in timestamp order: `20261006000000_initial_schema.sql`, `20261007000000_root_operator.sql`, `20261008000000_operational_state.sql`, then `20261009000000_root_sandbox.sql`.
 2. Install or run the Supabase CLI, link this project with ref `ccsdpdeyfnqcukguyvyd`, then deploy the `manage-staff` Edge Function:
 
    ```sh
@@ -65,7 +65,7 @@ The local Supabase URL and publishable key belong in `.env.local`; use `.env.exa
    on conflict (id) do nothing;
    ```
 
-   Root access is not available through public registration. The root console requires TOTP multi-factor authentication, lists administrator account and establishment details, supports only profile/establishment corrections and account suspension/reactivation, and records those actions in `root_audit_log`. Never promote a normal admin from the public app; provisioning is an owner-only database operation.
+   Root access is not available through public registration. The root console requires TOTP multi-factor authentication, lists administrator account and establishment details, supports only profile/establishment corrections and account suspension/reactivation, and records those actions in `root_audit_log`. It also offers a local `Testing establecimiento` preview that lets the root operator experience the interface exactly as non-root staff will: the synthetic inventory and any changes live only in browser memory, are never written to Supabase, and are discarded when returning to the root console with the "Volver a consola root" button. The `is_sandbox` migration additionally keeps any root operational access confined to a sandbox establishment at the RLS and RPC level. Never promote a normal admin from the public app; provisioning is an owner-only database operation.
 
 Authentication, establishment details, inventory, sales, requests, and shift state are stored in Supabase. Operational state is isolated by establishment, guarded by row-level security and a revision-checked RPC, and refreshed across devices while the app is open. On the first administrator sign-in after applying the operational-state migration, legacy browser records matching that establishment's ID are imported if no database state exists. Apply every migration before using the deployed app; never use browser storage as the authoritative source for business records.
 

@@ -7,6 +7,7 @@ Kuantika POS uses Supabase PostgreSQL for identity, establishment ownership, sta
 1. `20261006000000_initial_schema.sql` creates administrator/staff profiles and establishments, the auth-user profile trigger, and establishment-scoped access checks.
 2. `20261007000000_root_operator.sql` adds privileged support accounts and an audit log for root operations.
 3. `20261008000000_operational_state.sql` adds persistent inventory, sales, requests, and shift state.
+4. `20261009000000_root_sandbox.sql` marks the root-owned test establishment and limits root operational access to that sandbox.
 
 ## Tables and ownership
 
@@ -21,6 +22,14 @@ One row per business location. `owner_id` references the administrator's Auth us
 ### `public.root_users` and `public.root_audit_log`
 
 These tables are created by the root-operator migration. Root identities are provisioned by an owner through SQL, not public registration. Root actions require elevated authentication and are written to the audit log.
+
+### Root test establishment
+
+### Root test establishment
+
+The root-sandbox migration adds `establishments.is_sandbox` and confines root operational access in RLS (`can_access_establishment`) and `save_operational_state` to a single sandbox establishment per root account, so a root session can never read or write a customer's operational state.
+
+The in-app test experience itself is deliberately client-only: from the root console, "Entrar a probar" builds a local `Testing establecimiento` with synthetic inventory and no database association. Nothing is persisted, no revision is saved, and leaving the sandbox discards the temporary records. Normal root account administration remains behind the audited Edge Function.
 
 ### `public.operational_state`
 
