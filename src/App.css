@@ -2120,17 +2120,20 @@
 }
 .product-price-actions {
   display: flex;
-  justify-content: flex-end;
   gap: 10px;
   margin-top: 4px;
 }
 .product-price-actions button {
-  padding: 9px 16px;
+  flex: 1;
+  padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
+  font-size: 13px;
   cursor: pointer;
 }
 .product-price-actions .primary-button {
   border-color: transparent;
+  background: #282a27;
+  color: #fff;
 }
