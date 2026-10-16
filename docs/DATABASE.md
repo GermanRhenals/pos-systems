@@ -8,6 +8,8 @@ Kuantika POS uses Supabase PostgreSQL for identity, establishment ownership, sta
 2. `20261007000000_root_operator.sql` adds privileged support accounts and an audit log for root operations.
 3. `20261008000000_operational_state.sql` adds persistent inventory, sales, requests, and shift state.
 4. `20261009000000_root_sandbox.sql` marks the root-owned test establishment and limits root operational access to that sandbox.
+5. `20261016000000_bar_direct_sales.sql` replaces `save_operational_state` so bar staff can record validated direct walk-in sales (no waiter request) while keeping catalog, shift and append-only rules intact.
+6. `20261017000000_operational_incidents.sql` replaces `save_operational_state` again to add the admin-only `incidents` list (accidental losses and stock shortages); waiter and bar callers must leave it unchanged.
 
 ## Tables and ownership
 
@@ -38,7 +40,10 @@ One row per establishment, keyed by `establishment_id`. Its `state` JSON documen
 - `products`: inventory items and stock levels;
 - `sales`: recorded sale line items and ticket metadata;
 - `requests`: waiter orders and dispatch status;
+- `incidents`: admin-recorded losses (broken bottles, missing units, defective crates) with the economic value of each event;
 - `turn`: the current shift start/end timestamps.
+
+`incidents` is optional for backwards compatibility: rows written before the incidents migration are read with an empty list.
 
 `revision` is incremented on each successful save. The browser sends the revision it last read, so stale writes are rejected instead of silently replacing a newer version from another device. Staff records are intentionally excluded from this document and remain sourced from `profiles`.
 
@@ -48,9 +53,9 @@ One row per establishment, keyed by `establishment_id`. Its `state` JSON documen
 
 `save_operational_state(uuid, jsonb, bigint)` is the only write path for operational state. Direct table writes are revoked from browser roles. The function verifies establishment access and the expected revision, then enforces role-specific behavior:
 
-- **Admin:** may manage products, sales, requests, and shift state.
-- **Waiter:** may append only their own pending requests; cannot alter inventory, sales, or shifts.
-- **Bar:** may dispatch existing requests, decrease stock by exactly the requested quantities, and record matching sale items; cannot edit product details or shifts.
+- **Admin:** may manage products, sales, requests, incidents, and shift state.
+- **Waiter:** may append only their own pending requests; cannot alter inventory, sales, incidents, or shifts.
+- **Bar:** may dispatch existing requests, decrease stock by exactly the requested quantities, record matching sale items, and record direct walk-in sales at the bar (`channel: 'barra'`). Direct sales are only accepted while the shift is open, must be attributed to the caller's staff profile, must equal the current catalog price times the quantity, and each unit sold must be deducted from inventory; bar users cannot edit product details, incidents, increase stock or change shifts.
 - **Root:** has no operational-state access through this RPC.
 
 All browser requests use the authenticated Supabase client. Never expose the service-role key in frontend configuration.

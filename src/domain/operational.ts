@@ -5,13 +5,15 @@
  * older browser data and the first Supabase migration can be imported safely.
  */
 export type Product = { id: number; name: string; category: string; stock: number; minimum: number; price: number; unit: string }
-export type Sale = { id: number; product: string; quantity: number; total: number; time: string; server: string; createdAt?: number; requestId?: number; requestedAt?: number; table?: string }
+export type Sale = { id: number; product: string; quantity: number; total: number; time: string; server: string; createdAt?: number; requestId?: number; requestedAt?: number; table?: string; productId?: number; orderId?: number; channel?: 'barra' }
 export type Request = { id: number; requesterId?: number | string; server: string; table: string; items: string; itemsList?: { productId: number; quantity: number; unitPrice?: number }[]; time: string; createdAt?: number; status: 'Pendiente' | 'Despachado' }
+export type IncidentKind = 'Daño' | 'Faltante' | 'Defectuoso' | 'Otro'
+export type Incident = { id: number; createdAt: number; kind: IncidentKind; productId?: number; product?: string; quantity: number; unitValue: number; total: number; note?: string; registeredBy: string; stockAdjusted: boolean }
 export type User = { id: number | string; name: string; username: string; zone: string; role: 'waiter' | 'bar'; active: boolean }
 export type Establishment = { id: string; name: string; city: string; country?: string; taxId?: string; owner_id?: string }
-export type Records = { products: Product[]; sales: Sale[]; requests: Request[]; users: User[] }
+export type Records = { products: Product[]; sales: Sale[]; requests: Request[]; incidents: Incident[]; users: User[] }
 export type TurnState = { startedAt: number; endedAt: number | null }
-export type OperationalState = Pick<Records, 'products' | 'sales' | 'requests'> & { turn: TurnState }
+export type OperationalState = Pick<Records, 'products' | 'sales' | 'requests' | 'incidents'> & { turn: TurnState }
 export type SalesPeriod = 'Día' | 'Semana' | 'Mes' | 'Trimestre' | 'Año'
 export type SalesLedgerEntry = { id: string; orderedAt: number; dispatchedAt: number; server: string; table: string; products: string[]; total: number }
 export type RootEstablishment = { id: string; name: string; city: string; country: string; taxId: string }
@@ -61,7 +63,7 @@ export const taxIdExamples: Record<string, { label: string; placeholder: string 
   Perú: { label: 'RUC', placeholder: 'Ej. 20123456789' },
 }
 
-export const emptyRecords: Records = { products: [], sales: [], requests: [], users: [] }
+export const emptyRecords: Records = { products: [], sales: [], requests: [], incidents: [], users: [] }
 
 /** Fresh copy of the onboarding catalog so callers never share product references. */
 export const seedProducts = (): Product[] => initialProducts.map((product) => ({ ...product }))
@@ -77,6 +79,7 @@ const initialRecords: Record<string, Records> = {
     products: initialProducts,
     sales: [],
     requests: [],
+    incidents: [],
     users: initialUsers,
   },
 }
@@ -89,6 +92,7 @@ export const operationalStateFor = (records: Records, turn: TurnState): Operatio
   products: records.products,
   sales: records.sales,
   requests: records.requests,
+  incidents: records.incidents,
   turn,
 })
 
@@ -97,11 +101,12 @@ export const parseOperationalState = (value: unknown): OperationalState => {
   if (!value || typeof value !== 'object') throw new Error('El estado operativo guardado no es válido.')
   const state = value as Partial<OperationalState>
   if (!Array.isArray(state.products) || !Array.isArray(state.sales) || !Array.isArray(state.requests)
+    || (state.incidents !== undefined && !Array.isArray(state.incidents))
     || !state.turn || typeof state.turn.startedAt !== 'number'
     || (typeof state.turn.endedAt !== 'number' && state.turn.endedAt !== null)) {
     throw new Error('El estado operativo guardado está incompleto o dañado.')
   }
-  return { products: state.products, sales: state.sales, requests: state.requests, turn: state.turn }
+  return { products: state.products, sales: state.sales, requests: state.requests, incidents: state.incidents ?? [], turn: state.turn }
 }
 
 /** Currency and date helpers keep all UI formatting in the Spanish-Colombia locale. */
@@ -164,6 +169,9 @@ export const getSalesPeriodBounds = (period: SalesPeriod, timestamp: number) => 
   return { start: start.getTime(), end: end.getTime() }
 }
 
+/** Economic value of a set of incidents (losses) for the current turn window. */
+export const sumIncidents = (incidents: Incident[]) => incidents.reduce((total, incident) => total + incident.total, 0)
+
 export const requestTotal = (request: Request, products: Product[]) => request.itemsList?.reduce((total, line) => {
   const product = products.find((item) => item.id === line.productId)
   return total + (line.unitPrice ?? product?.price ?? 0) * line.quantity
@@ -173,7 +181,11 @@ export const requestTotal = (request: Request, products: Product[]) => request.i
 export const groupSalesByOrder = (sales: Sale[]) => {
   const entries = new Map<string, SalesLedgerEntry>()
   sales.forEach((sale) => {
-    const id = sale.requestId === undefined ? `sale-${sale.id}` : `request-${sale.requestId}`
+    const id = sale.orderId !== undefined
+      ? `order-${sale.orderId}`
+      : sale.requestId === undefined
+        ? `sale-${sale.id}`
+        : `request-${sale.requestId}`
     const existing = entries.get(id)
     if (existing) {
       existing.products.push(`${sale.quantity}x ${sale.product}`)
@@ -204,6 +216,7 @@ export const loadRecords = (value: string | null): Record<string, Records> => {
       {
         ...establishmentRecords,
         products: establishmentRecords.products?.length ? establishmentRecords.products : seedProducts(),
+        incidents: establishmentRecords.incidents ?? [],
         users: (establishmentRecords.users ?? []).map((user) => ({
           id: user.id,
           name: user.name,

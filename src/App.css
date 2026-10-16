@@ -337,7 +337,7 @@
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 15px;
   margin-bottom: 22px;
 }
@@ -356,6 +356,9 @@
 }
 .metric-card.yellow {
   background: var(--yellow);
+}
+.metric-card.orange {
+  background: var(--orange);
 }
 .metric-card > span {
   font-size: 11px;
@@ -386,6 +389,9 @@
 }
 .yellow small b {
   color: #a15e00;
+}
+.orange small b {
+  color: #7d3308;
 }
 .sparkline {
   position: absolute;
@@ -824,7 +830,7 @@
 }
 .close-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 14px;
   margin: 16px 0;
 }
@@ -1009,6 +1015,37 @@
 }
 .remove-user:hover {
   background: #ffe9e2;
+}
+.incidents-table {
+  padding-bottom: 6px;
+}
+.incident-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.8fr 0.6fr 0.9fr 0.8fr auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 56px;
+  padding: 10px 23px;
+  border-top: 1px solid #f0f0ec;
+  font-size: 11px;
+}
+.incident-head {
+  min-height: 30px;
+  color: #9ea19a;
+  font:
+    9px "DM Mono",
+    monospace;
+  text-transform: uppercase;
+}
+.incident-product {
+  display: grid;
+}
+.incident-product small {
+  color: #9ea19a;
+  font-size: 9px;
+}
+.incident-kind {
+  color: #bd6e58;
 }
 /* ========================================================================= */
 /* Establishment selector */
@@ -1363,6 +1400,25 @@
 .waiter-request-form > .primary-button {
   margin-left: 23px;
 }
+/* ========================================================================= */
+/* Direct bar sale (walk-in customer, no table) */
+/* ========================================================================= */
+
+.bar-sale-form > .form-fields {
+  grid-template-columns: 1fr;
+}
+.bar-sale-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 23px 15px;
+  color: #7b856d;
+  font-size: 11px;
+}
+.bar-sale-footer strong {
+  color: #282a27;
+  font-size: 18px;
+}
 @keyframes appear {
   from {
     opacity: 0;
@@ -1575,6 +1631,9 @@
   }
   .main-grid {
     grid-template-columns: 1fr;
+  }
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
   .request-board,
   .product-grid {

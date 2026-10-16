@@ -52,9 +52,12 @@ import {
   recordsStorageKey,
   requestTotal,
   seededRecords,
+  sumIncidents,
   taxIdExamples,
   turnsStorageKey,
   type Establishment,
+  type Incident,
+  type IncidentKind,
   type MfaFlow,
   type OperationalState,
   type Product,
@@ -302,8 +305,17 @@ function App() {
     zone: "Salón principal",
   });
   const [newRequest, setNewRequest] = useState({ table: "", items: "" });
+  const [newIncident, setNewIncident] = useState<{
+    kind: IncidentKind;
+    productId: string;
+    quantity: string;
+    unitValue: string;
+    note: string;
+  }>({ kind: "Daño", productId: "", quantity: "1", unitValue: "", note: "" });
   const [waiterProductSearch, setWaiterProductSearch] = useState("");
   const [waiterCart, setWaiterCart] = useState<Record<number, number>>({});
+  const [barProductSearch, setBarProductSearch] = useState("");
+  const [barCart, setBarCart] = useState<Record<number, number>>({});
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("Día");
   const [salesDate, setSalesDate] = useState(() =>
     formatDateInputValue(Date.now()),
@@ -336,12 +348,18 @@ function App() {
     0,
     (activeTurn.endedAt ?? clockNow) - activeTurn.startedAt,
   );
-  const { products, sales: allSales, requests, users } = records;
+  const { products, sales: allSales, requests, incidents, users } = records;
   const sales = allSales.filter(
     (sale) =>
       sale.createdAt !== undefined &&
       sale.createdAt >= activeTurn.startedAt &&
       sale.createdAt <= (activeTurn.endedAt ?? clockNow),
+  );
+  // Accidental losses recorded during the same turn window as the sales above.
+  const turnIncidents = incidents.filter(
+    (incident) =>
+      incident.createdAt >= activeTurn.startedAt &&
+      incident.createdAt <= (activeTurn.endedAt ?? clockNow),
   );
   const activeEstablishment =
     establishments.find(
@@ -355,6 +373,8 @@ function App() {
     (product) => product.stock <= product.minimum,
   ).length;
   const totalSales = sales.reduce((total, sale) => total + sale.total, 0);
+  const incidentsLoss = sumIncidents(turnIncidents);
+  const netResult = totalSales - incidentsLoss;
   const reportTimestamp = salesDate ? parseDateInputValue(salesDate) : clockNow;
   const periodBounds = getSalesPeriodBounds(salesPeriod, reportTimestamp);
   const periodRangeLabel = `${new Date(periodBounds.start).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} - ${new Date(periodBounds.end - 1).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}`;
@@ -435,7 +455,10 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    if (activeTurn.endedAt !== null) setWaiterCart({});
+    if (activeTurn.endedAt !== null) {
+      setWaiterCart({});
+      setBarCart({});
+    }
   }, [activeTurn.endedAt]);
   useEffect(() => {
     // Restore the authenticated account and hydrate each accessible establishment.
@@ -918,6 +941,32 @@ function App() {
         : [];
     },
   );
+  const availableBarProducts = products.filter(
+    (product) =>
+      product.name
+        .toLowerCase()
+        .includes(barProductSearch.toLowerCase()) ||
+      product.category
+        .toLowerCase()
+        .includes(barProductSearch.toLowerCase()),
+  );
+  const barCartShortages = Object.entries(barCart).flatMap(
+    ([productId, quantity]) => {
+      const product = products.find((item) => item.id === Number(productId));
+      return !product || product.stock < quantity
+        ? [
+            `${product?.name ?? "Producto eliminado"}: pediste ${quantity}, disponibles ${product?.stock ?? 0}`,
+          ]
+        : [];
+    },
+  );
+  const barCartTotal = Object.entries(barCart).reduce(
+    (total, [productId, quantity]) => {
+      const product = products.find((item) => item.id === Number(productId));
+      return total + (product ? product.price * quantity : 0);
+    },
+    0,
+  );
 
   // ---------------------------------------------------------------------------
   // Product view selectors
@@ -1291,6 +1340,86 @@ function App() {
     }));
     showToast(`${product.name} eliminado del inventario`);
   };
+  // Losses are admin-only; linking a product also removes it from inventory.
+  const registerIncident = () => {
+    if (!isAdmin) return;
+    const quantity = Number(newIncident.quantity);
+    const linkedProduct = newIncident.productId
+      ? products.find(
+          (product) => product.id === Number(newIncident.productId),
+        )
+      : undefined;
+    const unitValue = newIncident.unitValue
+      ? Number(newIncident.unitValue)
+      : (linkedProduct?.price ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast("Indica una cantidad mayor que cero");
+      return;
+    }
+    if (!Number.isFinite(unitValue) || unitValue < 0) {
+      showToast("Indica un valor unitario válido");
+      return;
+    }
+    if (linkedProduct && quantity > linkedProduct.stock) {
+      showToast(`La cantidad supera el stock de ${linkedProduct.name}`);
+      return;
+    }
+    const createdAt = Date.now();
+    const incident: Incident = {
+      id: createdAt,
+      createdAt,
+      kind: newIncident.kind,
+      productId: linkedProduct?.id,
+      product: linkedProduct?.name,
+      quantity,
+      unitValue,
+      total: quantity * unitValue,
+      note: newIncident.note.trim() || undefined,
+      registeredBy: currentUser?.name ?? "Administrador",
+      stockAdjusted: Boolean(linkedProduct),
+    };
+    updateRecords((current) => ({
+      ...current,
+      products: linkedProduct
+        ? current.products.map((item) =>
+            item.id === linkedProduct.id
+              ? { ...item, stock: item.stock - quantity }
+              : item,
+          )
+        : current.products,
+      incidents: [incident, ...current.incidents],
+    }));
+    setNewIncident({
+      kind: "Daño",
+      productId: "",
+      quantity: "1",
+      unitValue: "",
+      note: "",
+    });
+    showToast(`Incidencia registrada: ${money(incident.total)}`);
+  };
+  const deleteIncident = (incident: Incident) => {
+    if (!isAdmin) return;
+    if (
+      !window.confirm(
+        `¿Eliminar la incidencia de ${incident.product ?? "este registro"}?`,
+      )
+    )
+      return;
+    updateRecords((current) => ({
+      ...current,
+      products:
+        incident.stockAdjusted && incident.productId !== undefined
+          ? current.products.map((item) =>
+              item.id === incident.productId
+                ? { ...item, stock: item.stock + incident.quantity }
+                : item,
+            )
+          : current.products,
+      incidents: current.incidents.filter((item) => item.id !== incident.id),
+    }));
+    showToast("Registro de incidencia eliminado");
+  };
   const dispatchRequest = (requestId: number) => {
     if (activeTurn.endedAt !== null) {
       showToast("Inicia un turno para despachar y registrar pagos");
@@ -1477,6 +1606,96 @@ function App() {
       else next[product.id] -= 1;
       return next;
     });
+  const addToBarCart = (product: Product) => {
+    if (activeTurn.endedAt !== null) {
+      showToast(
+        "El turno está cerrado; no se pueden registrar ventas en la barra",
+      );
+      return;
+    }
+    setBarCart((current) => {
+      if (product.stock <= (current[product.id] ?? 0)) {
+        showToast(
+          product.stock > 0
+            ? `Solo hay ${product.stock} disponibles de ${product.name}`
+            : `${product.name} no tiene existencias`,
+        );
+        return current;
+      }
+      return { ...current, [product.id]: (current[product.id] ?? 0) + 1 };
+    });
+  };
+  const removeFromBarCart = (product: Product) =>
+    setBarCart((current) => {
+      const next = { ...current };
+      if (!next[product.id] || next[product.id] === 1) delete next[product.id];
+      else next[product.id] -= 1;
+      return next;
+    });
+  /**
+   * Walk-in sale at the bar: no table, no waiter request. The stock discount
+   * and the sale lines are written in a single revision-checked save; the
+   * `channel: 'barra'` marker is what the database validates for the bar role.
+   */
+  const registerDirectBarSale = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (activeTurn.endedAt !== null) {
+      showToast("El turno está cerrado; no se pueden registrar ventas");
+      return;
+    }
+    if (!currentUser) {
+      showToast("No se identificó al vendedor; cierra sesión y vuelve a entrar");
+      return;
+    }
+    const saleLines = Object.entries(barCart).flatMap(
+      ([productId, quantity]) => {
+        const product = products.find((item) => item.id === Number(productId));
+        return product ? [{ product, quantity }] : [];
+      },
+    );
+    if (barCartShortages.length > 0) {
+      showToast(`Stock insuficiente: ${barCartShortages.join("; ")}`);
+      return;
+    }
+    if (saleLines.length === 0) {
+      showToast("Agrega al menos un producto para registrar la venta");
+      return;
+    }
+    const soldAt = Date.now();
+    const orderId = soldAt;
+    const saleTotal = saleLines.reduce(
+      (total, line) => total + line.product.price * line.quantity,
+      0,
+    );
+    updateRecords((current) => ({
+      ...current,
+      products: current.products.map((product) => {
+        const line = saleLines.find((item) => item.product.id === product.id);
+        return line
+          ? { ...product, stock: product.stock - line.quantity }
+          : product;
+      }),
+      sales: [
+        ...saleLines.map(({ product, quantity }, index) => ({
+          id: soldAt + index,
+          orderId,
+          channel: "barra" as const,
+          productId: product.id,
+          product: product.name,
+          quantity,
+          total: product.price * quantity,
+          time: formatExactTime(soldAt),
+          server: currentUser.name,
+          createdAt: soldAt,
+          table: "Barra",
+        })),
+        ...current.sales,
+      ],
+    }));
+    setBarCart({});
+    setBarProductSearch("");
+    showToast(`Venta de ${money(saleTotal)} registrada en la barra`);
+  };
 
   // ---------------------------------------------------------------------------
   // Administrator & staff management (secured Edge Function)
@@ -1996,11 +2215,14 @@ function App() {
                   "Inventario",
                   "Solicitudes",
                   "Ventas",
+                  "Incidentes",
                   "Usuarios",
                   "Establecimientos",
                   "Cierre de turno",
                 ]
-              : ["Solicitudes"]
+              : isBar
+                ? ["Solicitudes", "Venta en barra"]
+                : ["Solicitudes"]
           ).map((view) => (
             <button
               className={activeView === view ? "nav-item active" : "nav-item"}
@@ -2016,13 +2238,17 @@ function App() {
                       ? "↗"
                       : view === "Ventas"
                         ? "$"
-                        : view === "Usuarios"
-                          ? "♙"
-                          : view === "Establecimientos"
-                            ? "⌂"
-                            : view === "Consola root"
-                              ? "◆"
-                              : "◷"}
+                        : view === "Incidentes"
+                          ? "⚠"
+                          : view === "Usuarios"
+                            ? "♙"
+                            : view === "Establecimientos"
+                              ? "⌂"
+                              : view === "Consola root"
+                                ? "◆"
+                                : view === "Venta en barra"
+                                  ? "◈"
+                                  : "◷"}
               </span>
               {view === "Solicitudes" && isBar ? "Bandeja del bar" : view}
               {view === "Solicitudes" && pendingRequests > 0 && (
@@ -2477,7 +2703,7 @@ function App() {
         {!isAdmin && activeTurn.endedAt !== null && (
           <div className="shift-closed-notice" role="status">
             {isBar
-              ? "El turno está cerrado; no se pueden despachar pedidos."
+              ? "El turno está cerrado; no se pueden despachar pedidos ni registrar ventas en la barra."
               : "El turno está cerrado. Solo un administrador puede iniciarlo; podrás solicitar al bar cuando esté abierto."}
           </div>
         )}
@@ -2526,6 +2752,16 @@ function App() {
                   <b>Atención</b> requieren compra
                 </small>
                 <div className="sparkline">╲╱╲╱╲╱╲</div>
+              </div>
+              <div className="metric-card orange">
+                <span>
+                  Incidencias registradas del turno <i>⚠</i>
+                </span>
+                <strong>{money(incidentsLoss)}</strong>
+                <small>
+                  <b>{turnIncidents.length}</b> incidentes registrados
+                </small>
+                <div className="sparkline">╱╲╲╱╱╲╲</div>
               </div>
             </section>
             <section className="main-grid">
@@ -2944,6 +3180,173 @@ function App() {
             </div>
           </section>
         )}
+        {/* Losses register: the admin records accidents and stock shortages. */}
+        {activeView === "Incidentes" && isAdmin && (
+          <section className="view-section incidents-view">
+            <div className="view-toolbar">
+              <div>
+                <span className="section-kicker">CONTROL DE INCIDENCIAS</span>
+                <h2>Incidentes y faltantes</h2>
+              </div>
+              <span className="active-users">
+                <span />
+                {incidents.length} registrados · {money(incidentsLoss)} este
+                turno
+              </span>
+            </div>
+            <div className="users-layout">
+              <form
+                className="panel user-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  registerIncident();
+                }}
+              >
+                <div className="panel-heading">
+                  <div>
+                    <span className="section-kicker">NUEVO REGISTRO</span>
+                    <h2>Reportar incidencia</h2>
+                  </div>
+                  <span className="form-lock">⚠</span>
+                </div>
+                <div className="form-fields">
+                  <label>
+                    Tipo de incidente
+                    <select
+                      value={newIncident.kind}
+                      onChange={(event) =>
+                        setNewIncident({
+                          ...newIncident,
+                          kind: event.target.value as IncidentKind,
+                        })
+                      }
+                    >
+                      <option value="Daño">Daño (se cayó / se rompió)</option>
+                      <option value="Faltante">Faltante (unidades faltantes)</option>
+                      <option value="Defectuoso">Defectuoso (producto de fábrica)</option>
+                      <option value="Otro">Otro</option>
+                    </select>
+                  </label>
+                  <label>
+                    Producto afectado
+                    <select
+                      value={newIncident.productId}
+                      onChange={(event) =>
+                        setNewIncident({
+                          ...newIncident,
+                          productId: event.target.value,
+                        })
+                      }
+                    >
+                      <option value="">Sin producto (solo valor)</option>
+                      {products.map((product) => (
+                        <option value={product.id} key={product.id}>
+                          {product.name} · {money(product.price)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Cantidad
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      required
+                      value={newIncident.quantity}
+                      onChange={(event) =>
+                        setNewIncident({
+                          ...newIncident,
+                          quantity: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Valor unitario
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={newIncident.unitValue}
+                      onChange={(event) =>
+                        setNewIncident({
+                          ...newIncident,
+                          unitValue: event.target.value,
+                        })
+                      }
+                      placeholder="Automático según el producto"
+                    />
+                  </label>
+                  <label>
+                    Nota
+                    <input
+                      value={newIncident.note}
+                      onChange={(event) =>
+                        setNewIncident({
+                          ...newIncident,
+                          note: event.target.value,
+                        })
+                      }
+                      placeholder="Ej. caja de cerveza con 2 unidades faltantes"
+                    />
+                  </label>
+                  <button className="primary-button" type="submit">
+                    Registrar incidencia <span>→</span>
+                  </button>
+                </div>
+              </form>
+              <div className="panel users-panel">
+                <div className="panel-heading">
+                  <div>
+                    <span className="section-kicker">
+                      HISTORIAL DE INCIDENTES
+                    </span>
+                    <h2>Incidencias registradas</h2>
+                  </div>
+                </div>
+                <div className="incidents-table">
+                  <div className="incident-row incident-head">
+                    <span>Producto</span>
+                    <span>Tipo</span>
+                    <span>Cant.</span>
+                    <span>Valor</span>
+                    <span>Hora</span>
+                    <span />
+                  </div>
+                  {incidents.map((incident) => (
+                    <div className="incident-row" key={incident.id}>
+                      <span className="incident-product">
+                        <strong>{incident.product ?? "Sin producto"}</strong>
+                        {incident.note && <small>{incident.note}</small>}
+                      </span>
+                      <span className="incident-kind">{incident.kind}</span>
+                      <span>{incident.quantity}</span>
+                      <span>{money(incident.total)}</span>
+                      <span className="muted">
+                        {formatExactTime(incident.createdAt)}
+                      </span>
+                      <button
+                        className="remove-user"
+                        onClick={() => deleteIncident(incident)}
+                        title="Eliminar registro"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  ))}
+                  {incidents.length === 0 && (
+                    <div className="incident-row">
+                      <span className="muted">
+                        Aún no hay incidencias registradas en este establecimiento.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
         {/* Sales ledger filtered by the selected reporting interval. */}
         {activeView === "Ventas" && (
           <section className="view-section sales-view">
@@ -3300,6 +3703,126 @@ function App() {
             </div>
           </section>
         )}
+        {/* Walk-in sales at the bar: no table, no waiter request behind them. */}
+        {activeView === "Venta en barra" && isBar && (
+          <section className="view-section bar-sale-view">
+            <div className="view-toolbar">
+              <div>
+                <span className="section-kicker">ATENCIÓN EN LA BARRA</span>
+                <h2>Venta directa al cliente</h2>
+              </div>
+            </div>
+            <div className="close-grid">
+              <div className="close-summary">
+                <span>Total vendido</span>
+                <strong>{money(totalSales)}</strong>
+                <small>
+                  {activeTurn.endedAt === null
+                    ? "turno en curso"
+                    : "turno cerrado"}
+                </small>
+              </div>
+              <div className="close-summary">
+                <span>Unidades vendidas</span>
+                <strong>
+                  {sales.reduce((total, sale) => total + sale.quantity, 0)}
+                </strong>
+                <small>productos entregados en este turno</small>
+              </div>
+              <div className="close-summary">
+                <span>Tickets registrados</span>
+                <strong>{groupSalesByOrder(sales).length}</strong>
+                <small>órdenes de este turno</small>
+              </div>
+            </div>
+            {barCartShortages.length > 0 && (
+              <div className="stock-shortage-notice" role="alert">
+                <strong>Stock insuficiente para esta venta</strong>
+                <span>{barCartShortages.join(" · ")}</span>
+              </div>
+            )}
+            <form
+              className="panel waiter-request-form bar-sale-form"
+              onSubmit={registerDirectBarSale}
+            >
+              <div className="form-fields">
+                <label>
+                  Buscar producto
+                  <input
+                    value={barProductSearch}
+                    onChange={(event) =>
+                      setBarProductSearch(event.target.value)
+                    }
+                    placeholder="Filtra por nombre o categoría"
+                  />
+                </label>
+              </div>
+              <div className="waiter-products">
+                {availableBarProducts.map((product) => (
+                  <button
+                    type="button"
+                    className="waiter-product"
+                    onClick={() => addToBarCart(product)}
+                    key={product.id}
+                  >
+                    <span className="product-thumb">
+                      {productIcon(product.category)}
+                    </span>
+                    <span>
+                      <strong>{product.name}</strong>
+                      <small>
+                        {product.stock} disponibles · {product.category}
+                      </small>
+                    </span>
+                    <b>+ {barCart[product.id] ?? 0}</b>
+                  </button>
+                ))}
+                {availableBarProducts.length === 0 && (
+                  <span className="empty-products">
+                    No hay productos disponibles para ese filtro.
+                  </span>
+                )}
+              </div>
+              <div className="waiter-cart">
+                {Object.keys(barCart).length > 0 ? (
+                  Object.entries(barCart).map(([productId, quantity]) => {
+                    const product = products.find(
+                      (item) => item.id === Number(productId),
+                    );
+                    return product ? (
+                      <div className="cart-line" key={product.id}>
+                        <span>
+                          {quantity}x {product.name}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeFromBarCart(product)}
+                        >
+                          −
+                        </button>
+                      </div>
+                    ) : null;
+                  })
+                ) : (
+                  <span>
+                    Selecciona productos para atender a tu cliente en la barra.
+                  </span>
+                )}
+              </div>
+              <div className="bar-sale-footer">
+                <span>Total a cobrar</span>
+                <strong>{money(barCartTotal)}</strong>
+              </div>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={Object.keys(barCart).length === 0}
+              >
+                Registrar venta <span>→</span>
+              </button>
+            </form>
+          </section>
+        )}
         {/* Shift summary and print-ready closeout report. */}
         {activeView === "Cierre de turno" && (
           <section className="view-section close-view">
@@ -3352,6 +3875,16 @@ function App() {
                 </strong>
                 <small>productos vendidos</small>
               </div>
+              <div className="close-summary">
+                <span>Incidencias registradas del turno</span>
+                <strong>{money(incidentsLoss)}</strong>
+                <small>{turnIncidents.length} incidentes registrados</small>
+              </div>
+              <div className="close-summary">
+                <span>Resultado neto</span>
+                <strong>{money(netResult)}</strong>
+                <small>ventas menos incidencias</small>
+              </div>
             </div>
             <div className="pdf-box">
               <div>
@@ -3359,8 +3892,8 @@ function App() {
                 <div>
                   <strong>Reporte de inventario y ventas</strong>
                   <small>
-                    Incluye existencias actuales, productos vendidos y
-                    solicitudes despachadas.
+                    Incluye existencias actuales, productos vendidos,
+                    solicitudes despachadas e incidentes con su valor.
                   </small>
                 </div>
               </div>
