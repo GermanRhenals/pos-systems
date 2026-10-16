@@ -2091,3 +2091,46 @@
   line-height: 1.6;
   color: #4c5247;
 }
+/* Admin-only product price edit modal (reuses the privacy modal shell). */
+.product-price-modal {
+  width: min(100%, 380px);
+}
+.product-price-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+.product-price-current {
+  margin: 0;
+  color: #4c5247;
+}
+.product-price-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #4c5247;
+}
+.product-price-field input {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 14px;
+}
+.product-price-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+.product-price-actions button {
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+.product-price-actions .primary-button {
+  border-color: transparent;
+}

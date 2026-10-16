@@ -305,6 +305,11 @@ function App() {
     zone: "Salón principal",
   });
   const [newRequest, setNewRequest] = useState({ table: "", items: "" });
+  // Admin-only price edit modal for a single inventory product.
+  const [priceEdit, setPriceEdit] = useState<{
+    product: Product;
+    value: string;
+  } | null>(null);
   const [newIncident, setNewIncident] = useState<{
     kind: IncidentKind;
     productId: string;
@@ -1339,6 +1344,23 @@ function App() {
       products: current.products.filter((item) => item.id !== product.id),
     }));
     showToast(`${product.name} eliminado del inventario`);
+  };
+  const saveProductPrice = () => {
+    if (!isAdmin || !priceEdit) return;
+    const value = Number(priceEdit.value);
+    if (!Number.isFinite(value) || value < 0) {
+      showToast("Ingresa un precio válido");
+      return;
+    }
+    const target = priceEdit.product;
+    updateRecords((current) => ({
+      ...current,
+      products: current.products.map((item) =>
+        item.id === target.id ? { ...item, price: value } : item,
+      ),
+    }));
+    setPriceEdit(null);
+    showToast(`Precio de ${target.name} actualizado a ${money(value)}`);
   };
   // Losses are admin-only; linking a product also removes it from inventory.
   const registerIncident = () => {
@@ -3509,6 +3531,18 @@ function App() {
                     <button onClick={() => registerSale(product)}>
                       Registrar venta
                     </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() =>
+                          setPriceEdit({
+                            product,
+                            value: String(product.price),
+                          })
+                        }
+                      >
+                        Editar precio
+                      </button>
+                    )}
                     <button
                       className="delete-button"
                       onClick={() => deleteProduct(product)}
@@ -3520,6 +3554,66 @@ function App() {
                 </div>
               ))}
             </div>
+            {priceEdit && (
+              <div
+                className="privacy-modal-overlay"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Editar precio de ${priceEdit.product.name}`}
+              >
+                <div className="privacy-modal product-price-modal">
+                  <div className="privacy-modal-header">
+                    <strong>Editar precio</strong>
+                    <button
+                      type="button"
+                      aria-label="Cerrar"
+                      onClick={() => setPriceEdit(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <form
+                    className="privacy-modal-body product-price-body"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      saveProductPrice();
+                    }}
+                  >
+                    <p className="product-price-current">
+                      {priceEdit.product.category} · {priceEdit.product.name}
+                    </p>
+                    <p className="product-price-current">
+                      Precio actual: {money(priceEdit.product.price)}
+                    </p>
+                    <label className="product-price-field">
+                      Nuevo precio
+                      <input
+                        type="number"
+                        min="0"
+                        step="100"
+                        autoFocus
+                        required
+                        value={priceEdit.value}
+                        onChange={(event) =>
+                          setPriceEdit({
+                            ...priceEdit,
+                            value: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <div className="product-price-actions">
+                      <button type="button" onClick={() => setPriceEdit(null)}>
+                        Cancelar
+                      </button>
+                      <button className="primary-button" type="submit">
+                        Guardar precio
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
           </section>
         )}
         {/* Waiter order entry and bar dispatch queue share the same persisted requests. */}
