@@ -194,12 +194,14 @@ function App() {
     user?: User;
   } | null>(rootPreview ? { role: "root" } : null);
   const [showLogin, setShowLogin] = useState(!rootPreview);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "forgot-password" | "reset-password">("login");
   const [registration, setRegistration] = useState({
     name: "",
     email: "",
     password: "",
   });
+  const [resetEmail, setResetEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(
     !rootPreview && Boolean(supabase),
   );
@@ -470,6 +472,13 @@ function App() {
     if (rootPreview) return;
     if (!supabase) return;
     const client = supabase;
+    const hash = window.location.hash;
+    if (hash && hash.includes("type=recovery")) {
+      setAuthMode("reset-password");
+      setShowLogin(true);
+      setLoginError("");
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    }
     let active = true;
     const hydrateSession = async (userId: string) => {
       const { data: profile, error: profileError } = await client
@@ -1260,6 +1269,60 @@ function App() {
       return;
     }
     setLoginError("");
+  };
+
+  const requestPasswordReset = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) {
+      setLoginError("Falta configurar Supabase para recuperar la contraseña");
+      return;
+    }
+    const email = resetEmail.trim().toLowerCase();
+    if (!email) {
+      setLoginError("Ingresa tu correo electrónico");
+      return;
+    }
+    setAuthLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname,
+    });
+    if (error) {
+      setLoginError(error.message);
+      setAuthLoading(false);
+      return;
+    }
+    setLoginError(
+      "Te hemos enviado un enlace para restablecer tu contraseña. Revisa tu correo.",
+    );
+    setAuthLoading(false);
+    setAuthMode("login");
+  };
+
+  const updatePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) {
+      setLoginError("Falta configurar Supabase para restablecer la contraseña");
+      return;
+    }
+    if (!newPassword || newPassword.length < 8) {
+      setLoginError("La contraseña debe tener al menos 8 caracteres");
+      return;
+    }
+    setAuthLoading(true);
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    if (error) {
+      setLoginError(error.message);
+      setAuthLoading(false);
+      return;
+    }
+    setLoginError("");
+    setNewPassword("");
+    setAuthMode("login");
+    setShowLogin(true);
+    setAuthLoading(false);
+    showToast("Contraseña actualizada correctamente");
   };
   const signOut = async () => {
     if (supabase) {
@@ -2105,6 +2168,78 @@ function App() {
                   Ya tengo una cuenta · Iniciar sesión
                 </button>
               </>
+            ) : authMode === "forgot-password" ? (
+              <>
+                <span className="section-kicker">RECUPERACIÓN DE CUENTA</span>
+                <h1>¿Olvidaste tu contraseña?</h1>
+                <p className="login-copy">
+                  Ingresa tu correo electrónico y te enviaremos un enlace para restablecerla.
+                </p>
+                <form onSubmit={requestPasswordReset} className="login-form">
+                  <label>
+                    Correo electrónico
+                    <input
+                      required
+                      type="email"
+                      autoFocus
+                      value={resetEmail}
+                      onChange={(event) => setResetEmail(event.target.value)}
+                      placeholder="tu@correo.com"
+                    />
+                  </label>
+                  {loginError && (
+                    <span className="login-error">{loginError}</span>
+                  )}
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={authLoading}
+                  >
+                    Enviar enlace de recuperación <span>→</span>
+                  </button>
+                </form>
+                <button
+                  className="back-login"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setLoginError("");
+                  }}
+                >
+                  Volver al inicio de sesión
+                </button>
+              </>
+            ) : authMode === "reset-password" ? (
+              <>
+                <span className="section-kicker">RESTABLECER CONTRASEÑA</span>
+                <h1>Nueva contraseña</h1>
+                <p className="login-copy">
+                  Ingresa tu nueva contraseña para acceder a tu cuenta.
+                </p>
+                <form onSubmit={updatePassword} className="login-form">
+                  <label>
+                    Nueva contraseña
+                    <input
+                      required
+                      type="password"
+                      autoFocus
+                      minLength={8}
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      placeholder="Mínimo 8 caracteres"
+                    />
+                  </label>
+                  {loginError && (
+                    <span className="login-error">{loginError}</span>
+                  )}
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={authLoading}
+                  >
+                    Actualizar contraseña <span>→</span>
+                  </button>
+                </form>
+              </>
             ) : (
               <>
                 <h1>Ingresa a tu portal</h1>
@@ -2142,20 +2277,32 @@ function App() {
                   <button
                     className="primary-button"
                     type="submit"
-                    disabled={!acceptedPrivacy}
+                    disabled={!acceptedPrivacy || authLoading}
                   >
                     Ingresar al portal <span>→</span>
                   </button>
                 </form>
-                <button
-                  className="back-login"
-                  onClick={() => {
-                    setAuthMode("register");
-                    setLoginError("");
-                  }}
-                >
-                  Crear cuenta de administrador
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                  <button
+                    className="back-login"
+                    onClick={() => {
+                      setAuthMode("forgot-password");
+                      setLoginError("");
+                      setResetEmail(login.username.includes("@") ? login.username : "");
+                    }}
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                  <button
+                    className="back-login"
+                    onClick={() => {
+                      setAuthMode("register");
+                      setLoginError("");
+                    }}
+                  >
+                    Crear cuenta de administrador
+                  </button>
+                </div>
               </>
             )}
             <div className="login-privacy">
