@@ -2033,17 +2033,12 @@ function App() {
                 <span>portal de operación</span>
               </div>
             </div>
-            <div className="ai-disclosure-login">
-              <strong>Aviso de inteligencia artificial y arbitraje:</strong>{" "}
-              Esta plataforma utiliza inteligencia artificial para apoyar
-              análisis, recomendaciones y automatización operativa. Las
-              decisiones finales y la revisión humana siguen siendo
-              responsabilidad del usuario o administrador. Cualquier
-              controversia derivada del uso de la plataforma se resolverá
-              mediante arbitraje vinculante, a menos que la ley aplicable exija
-              otra vía, y la parte que pretenda reclamar deberá seguir este
-              mecanismo antes de acudir a otras acciones legales.
-            </div>
+          <div className="ai-disclosure-login">
+            <strong>Aviso de inteligencia artificial y arbitraje</strong>{" "}
+            <a href="https://github.com/GermanRhenals/pos-systems/blob/master/POLITICA-DERECHOS-AUTOR.md" target="_blank" rel="noreferrer">
+              Ver políticas
+            </a>
+          </div>
             {!supabase ? (
               <>
                 <h1>Falta configurar Supabase</h1>
